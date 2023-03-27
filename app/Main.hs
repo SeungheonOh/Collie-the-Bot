@@ -1,35 +1,35 @@
 module Main where
 
-import System.Process
-import System.IO
 import Control.Concurrent
-import Control.Monad
 import Control.Concurrent.MVar
-import System.Timeout
-import Data.Maybe
-import Data.List
+import Control.Monad
 import Data.Char
+import Data.List
+import Data.Maybe
+import System.IO
+import System.Process
+import System.Timeout
 
-data GHCIHandle =
-  GHCIHandle
+data GHCIHandle = GHCIHandle
   { pout :: Handle
   , pin :: Handle
   , perr :: Handle
   , processHandle :: ProcessHandle
   }
 
-data GHCIError
+data GHCIResponse
   = GHCIError String
   | GHCITimeout
-  deriving (Show)
+  | GHCISuccess String
+  deriving (Show, Eq)
 
--- | Read handle until it has line ending in given string.
--- | Returning string does not include the ending string.
+{- | Read handle until it has line ending in given string.
+ | Returning string does not include the ending string.
+-}
 readHandleUntil :: Handle -> String -> IO String
 readHandleUntil handle end = do
-  li <- hGetLine handle
-
-  if isInfixOf end li
+  li <- hGetLine handler
+  if end `isInfixOf` li
     then pure ""
     else do
       y <- readHandleUntil handle end
@@ -40,28 +40,36 @@ readHandleUntil handle end = do
 -- | Start of GHCI process, setup needed things
 initializeGHCI :: FilePath -> IO GHCIHandle
 initializeGHCI execPath = do
-  withCreateProcess
-    (proc execPath [])
-    {std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe, create_group = True}
-    $ \(Just pin) (Just pout) (Just perr) processHandle -> do
-      hSetBuffering pin LineBuffering
-      hSetBuffering pout LineBuffering
-      hSetBuffering perr LineBuffering
+  (Just pin, Just pout, Just perr, processHandle) <-
+    createProcess
+      (proc execPath [])
+        { std_in = CreatePipe
+        , std_out = CreatePipe
+        , std_err = CreatePipe
+        , create_group = True
+        }
+  hSetBuffering pin LineBuffering
+  hSetBuffering pout LineBuffering
+  hSetBuffering perr LineBuffering
 
-      hPutStrLn pin ":unset +t +s"
-      hPutStrLn pin ":set prompt \"\""
-      hPutStrLn pin "import System.IO as COLLIESTD"
-      hPutStrLn pin "COLLIESTD.putStrLn \"DONE\""
+  hPutStrLn pin ":unset +t +s"
+  hPutStrLn pin ":set prompt \"\""
+  hPutStrLn pin "import System.IO as COLLIESTD"
+  hPutStrLn pin "COLLIESTD.putStrLn \"DONE\""
+  hPutStrLn pin "COLLIESTD.hPutStrLn COLLIESTD.stderr \"DONE\""
 
-      readHandleUntil pout "DONE" >>= putStrLn
-      pure $ GHCIHandle {..}
+  void $ readHandleUntil pout "DONE"
+  void $ readHandleUntil perr "DONE"
+
+  pure $ GHCIHandle {..}
 
 closeGHCI :: GHCIHandle -> IO ()
 closeGHCI (GHCIHandle {..}) = do
   cleanupProcess (Just pin, Just pout, Just perr, processHandle)
 
-clearGHCIBuffers :: GHCIHandle -> IO ()
-clearGHCIBuffers (GHCIHandle {..}) = do
+-- | Unsafe, will run even if GHCI is currently running.
+clearGHCI :: GHCIHandle -> IO ()
+clearGHCI (GHCIHandle {..}) = do
   -- Send interrupt, killing whatever is currently running
   interruptProcessGroupOf processHandle
 
@@ -74,9 +82,8 @@ clearGHCIBuffers (GHCIHandle {..}) = do
   void $ readHandleUntil pout "COLLIEISCLEANINGUP"
   void $ readHandleUntil perr "COLLIEISCLEANINGUPERR"
 
-
-sendCommand :: (Handle, Handle, Handle, ProcessHandle) -> String -> IO (Either GHCIError String)
-sendCommand (pin, pout, perr, ph) cmd = do
+sendCommand :: GHCIHandle -> String -> IO GHCIResponse
+sendCommand (GHCIHandle {..}) cmd = do
   -- Send command
   hPutStrLn pin cmd
 
@@ -96,45 +103,22 @@ sendCommand (pin, pout, perr, ph) cmd = do
       err <- readHandleUntil perr "COLLIEHASSPOKENERR"
 
       if null err
-        then pure $ Right  x
-        else pure $ Left $ GHCIError err
+        then pure $ GHCISuccess x
+        else pure $ GHCIError err
     -- If command hung, and timeout was reached
     Nothing -> do
-      -- Stop it
-      interruptProcessGroupOf ph
-      hPutStrLn pin "COLLIESTD.putStrLn \"CLEANUP\""
-      hPutStrLn pin "COLLIESTD.hPutStrLn stderr \"CLEANUPERR\""
-      void $ readHandleUntil perr "COLLIESTD.CLEANUPERR"
-      void $ readHandleUntil pout "COLLIESTD.CLEANUP"
-      pure $ Left $ GHCITimeout
+      clearGHCI handle
+      pure GHCITimeout
 
 main :: IO ()
 main = do
-  withCreateProcess
-    (proc "ghci" [])
-    {std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe, create_group = True}
-    $ \(Just pin) (Just pout) (Just perr) ph -> do
-      hSetBuffering pin LineBuffering
-      hSetBuffering pout LineBuffering
-      hSetBuffering perr LineBuffering
+  ghciHandle <- initializeGHCI "ghci"
+  sendCommand ghciHandle "fibo = 1 : 1 : zipWith (+) (tail fibo) fibo" >>= print
+  sendCommand ghciHandle "fibo" >>= print
 
-      hPutStrLn pin ":unset +t +s"
-      hPutStrLn pin ":set prompt \"\""
-      hPutStrLn pin "import System.IO as COLLIESTD"
-      hPutStrLn pin "COLLIESTD.putStrLn \"DONE\""
+  sendCommand ghciHandle "take 10 fibo" >>= print
+  sendCommand ghciHandle "take 2 fibo" >>= print
+  sendCommand ghciHandle "take 3 fibo" >>= print
+  sendCommand ghciHandle "take 5 fibo" >>= print
 
-      readHandleUntil pout "DONE" >>= putStrLn
-
-      putStrLn "done"
-
-      sendCommand (pin, pout, perr, ph) ":{\nfibo = 1 : 1 : zipWith (+) fibo (tail fibo)\n:}" >>= print
-
-      sendCommand (pin, pout, perr, ph) "take 10 fibo" >>= print
-
-      sendCommand (pin, pout, perr, ph) "do {print 1; print 2; pure 3}" >>= print
-
-      putStrLn "done"
-
-      forever $ do
-        x <- getLine
-        sendCommand (pin, pout, perr, ph) x >>= print
+  closeGHCI ghciHandle
