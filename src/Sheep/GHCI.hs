@@ -1,14 +1,31 @@
-module Main where
+module Sheep.GHCI where
 
-import Control.Concurrent
-import Control.Concurrent.MVar
-import Control.Monad
-import Data.Char
-import Data.List
-import Data.Maybe
-import System.IO
-import System.Process
-import System.Timeout
+import Control.Concurrent (
+  forkIO,
+  killThread,
+  newEmptyMVar,
+  putMVar,
+  readMVar,
+ )
+import Control.Monad (void)
+import Data.List (isInfixOf)
+import System.IO (
+  BufferMode (LineBuffering),
+  Handle,
+  hGetLine,
+  hPutStrLn,
+  hSetBuffering,
+ )
+import System.Process (
+  CreateProcess (create_group, std_err, std_in, std_out),
+  ProcessHandle,
+  StdStream (CreatePipe),
+  cleanupProcess,
+  createProcess,
+  interruptProcessGroupOf,
+  proc,
+ )
+import System.Timeout (timeout)
 
 data GHCIHandle = GHCIHandle
   { pout :: Handle
