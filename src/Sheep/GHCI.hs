@@ -1,4 +1,8 @@
+{-# LANGUAGE TypeFamilies #-}
+
 module Sheep.GHCI where
+
+import Sheep.Internal
 
 import Control.Concurrent (
   forkIO,
@@ -31,14 +35,27 @@ data GHCIHandle = GHCIHandle
   { pout :: Handle
   , pin :: Handle
   , perr :: Handle
+  , ptimeout :: Int
   , processHandle :: ProcessHandle
   }
+
+data GHCIAction
+  = GHCIRun String
+  | GHCIRestart
+  deriving (Show, Eq)
 
 data GHCIResponse
   = GHCIError String
   | GHCITimeout
   | GHCISuccess String
   deriving (Show, Eq)
+
+instance Sheep GHCIHandle where
+  type SheepResponse GHCIHandle = GHCIResponse
+  type SheepAction GHCIHandle = GHCIAction
+  initialize = undefined
+  herd = undefined
+  slaughter = undefined
 
 {- | Read handle until it has line ending in given string.
  | Returning string does not include the ending string.
@@ -55,8 +72,8 @@ readHandleUntil handle end = do
         else pure $ li <> "\n" <> y
 
 -- | Start of GHCI process, setup needed things
-initializeGHCI :: FilePath -> IO GHCIHandle
-initializeGHCI execPath = do
+initializeGHCI :: FilePath -> Int -> IO GHCIHandle
+initializeGHCI execPath ptimeout = do
   (Just pin, Just pout, Just perr, processHandle) <-
     createProcess
       (proc execPath [])
@@ -99,8 +116,8 @@ clearGHCI (GHCIHandle {..}) = do
   void $ readHandleUntil pout "COLLIEISCLEANINGUP"
   void $ readHandleUntil perr "COLLIEISCLEANINGUPERR"
 
-sendCommand :: GHCIHandle -> String -> IO GHCIResponse
-sendCommand handle@GHCIHandle {..} cmd = do
+runCommand :: GHCIHandle -> String -> IO GHCIResponse
+runCommand handle@GHCIHandle {..} cmd = do
   -- Send command
   hPutStrLn pin cmd
 
@@ -111,7 +128,7 @@ sendCommand handle@GHCIHandle {..} cmd = do
   -- Read stdout with timeout
   outVar <- newEmptyMVar
   outTID <- forkIO $ readHandleUntil pout "COLLIEHASSPOKEN" >>= putMVar outVar
-  out <- timeout 1000000 $ readMVar outVar
+  out <- timeout ptimeout $ readMVar outVar
   killThread outTID
 
   case out of
@@ -126,16 +143,3 @@ sendCommand handle@GHCIHandle {..} cmd = do
     Nothing -> do
       clearGHCI handle
       pure GHCITimeout
-
-main :: IO ()
-main = do
-  ghciHandle <- initializeGHCI "ghci"
-  sendCommand ghciHandle "fibo = 1 : 1 : zipWith (+) (tail fibo) fibo" >>= print
-  sendCommand ghciHandle "fibo" >>= print
-
-  sendCommand ghciHandle "take 10 fibo" >>= print
-  sendCommand ghciHandle "take 2 fibo" >>= print
-  sendCommand ghciHandle "take 3 fibo" >>= print
-  sendCommand ghciHandle "take 5 fibo" >>= print
-
-  closeGHCI ghciHandle
