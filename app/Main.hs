@@ -16,7 +16,7 @@ import Discord
 import Discord.Types
 
 onStart :: DiscordHandler ()
-onStart = pure ()
+onStart = lift $ putStrLn "Collie came to life"
 
 onEnd :: [Sheep] -> IO ()
 onEnd = mapM_ slaughter
@@ -25,11 +25,9 @@ onEvent :: [Sheep] -> Event -> DiscordHandler ()
 onEvent sheeps e = do
   cache <- readCache
   let action = asum $ ($ cache) . ($ e) . herd <$> sheeps
-  lift $ print e
 
   case action of
     Nothing -> do
-      lift $ putStrLn "No sheep"
       pure ()
     Just a -> a
 

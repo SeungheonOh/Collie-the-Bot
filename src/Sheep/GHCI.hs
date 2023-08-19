@@ -5,6 +5,7 @@ module Sheep.GHCI where
 import Sheep.Common
 import Sheep.Internal
 
+import Control.Applicative
 import Control.Concurrent (
   forkIO,
   killThread,
@@ -35,6 +36,7 @@ import System.Process (
  )
 import System.Timeout (timeout)
 
+import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Void
 import Text.Megaparsec qualified as P
@@ -154,21 +156,45 @@ runCommand handle@GHCIHandle {..} cmd = do
 
 type Parser = P.Parsec Void T.Text
 
+data Code
+  = CodeLine String
+  | CodeBlock String
+  deriving (Eq, Show)
+
 pMention :: Parser Int
 pMention = P.between (P.string "<@") (P.char '>') L.decimal
 
-pCodeBlock :: Parser String
+pCodeBlock :: Parser Code
 pCodeBlock =
-  P.try (P.between (P.string "```hs") (P.string "```") (P.many $ P.satisfy (/= '`')))
-    P.<|> P.try (P.between (P.string "```") (P.string "```") (P.many $ P.satisfy (/= '`')))
-    P.<|> P.between (P.string "`") (P.string "`") (P.many $ P.satisfy (/= '`'))
+  P.try (CodeBlock <$> P.between (P.string "```hs") (P.string "```") (P.many $ P.satisfy (/= '`')))
+    P.<|> (CodeBlock <$> P.try (P.between (P.string "```haskell") (P.string "```") (P.many $ P.satisfy (/= '`'))))
+    P.<|> (CodeBlock <$> P.try (P.between (P.string "```") (P.string "```") (P.many $ P.satisfy (/= '`'))))
+    P.<|> (CodeLine <$> P.between (P.string "`") (P.string "`") (P.many $ P.satisfy (/= '`')))
 
-pCodeMessage :: Parser String
+sepBy1 :: Alternative f => f a -> f s -> f [a]
+sepBy1 p s = scan
+  where
+    scan = liftA2 (:) p ((s *> scan) <|> pure [])
+
+pCodeMessage :: Parser [Code]
 pCodeMessage = do
   void pMention
   void $ P.optional P.newline
   P.space
-  pCodeBlock
+  sepBy1 pCodeBlock (void P.newline <|> P.space)
+
+runCodeBlock :: GHCIHandle -> Code -> IO GHCIResponse
+runCodeBlock handle (CodeLine l) = runCommand handle l
+runCodeBlock handle (CodeBlock b) = runCommand handle $ ":{\n" <> b <> "\n:}"
+
+prettyGHCIResponse :: GHCIResponse -> Text
+prettyGHCIResponse resp =
+  T.pack $
+    case resp of
+      GHCISuccess "" -> "Okay"
+      GHCISuccess x -> "```\n" <> x <> "```"
+      GHCIError err -> "```\n" <> err <> "```"
+      GHCITimeout -> "Timeout"
 
 herdFluffyGHCI :: GHCIHandle -> Event -> Cache -> Maybe (DiscordHandler ())
 herdFluffyGHCI handle (MessageCreate m) cache = do
@@ -180,17 +206,9 @@ herdFluffyGHCI handle (MessageCreate m) cache = do
 
   case (callsCollie, code) of
     (True, Right s) -> pure $ do
-      lift $ print $ messageContent m
-      resp <- lift $ runCommand handle s
-      let
-        pretty =
-          case resp of
-            GHCISuccess "" -> "Okay"
-            GHCISuccess x -> "```\n" <> x <> "```"
-            GHCIError err -> "```\n" <> err <> "```"
-            GHCITimeout -> "Timeout"
+      resps <- lift $ traverse (fmap prettyGHCIResponse . runCodeBlock handle) s
 
-      void $ restCall (R.CreateMessageDetailed (messageChannelId m) (reply m (T.pack pretty)))
+      void $ restCall (R.CreateMessageDetailed (messageChannelId m) (reply m (T.intercalate "\n" resps)))
     _ -> Nothing
 herdFluffyGHCI handle (MessageUpdate cid mid) cache = return $ do
   Right m <- restCall (R.GetChannelMessage (cid, mid))
@@ -209,17 +227,24 @@ herdFluffyGHCI handle (MessageUpdate cid mid) cache = return $ do
 
       case targetReply of
         Just r -> do
-          resp <- lift $ runCommand handle s
-          let
-            pretty =
-              case resp of
-                GHCISuccess "" -> "Okay"
-                GHCISuccess x -> "```\n" <> x <> "```"
-                GHCIError err -> "```\n" <> err <> "```"
-                GHCITimeout -> "Timeout"
-
-          void $ restCall (R.EditMessage (cid, messageId r) (reply m (T.pack pretty)))
+          resps <- lift $ traverse (fmap prettyGHCIResponse . runCodeBlock handle) s
+          void $ restCall (R.EditMessage (cid, messageId r) (reply m (T.intercalate "\n" resps)))
         Nothing -> pure ()
+    _ -> pure ()
+herdFluffyGHCI _ (MessageDelete cid mid) cache = return $ do
+  Right replies <- restCall (R.GetChannelMessages cid (20, R.AfterMessage mid))
+  let
+    collie = cacheCurrentUser cache
+
+    p x =
+      Just mid == (messageReference x >>= referenceMessageId)
+        && userId (messageAuthor x) == userId collie
+
+    targetReply = find p replies
+
+  case targetReply of
+    Just r -> void $ restCall (R.DeleteMessage (cid, messageId r))
+    Nothing -> pure ()
 herdFluffyGHCI _ _ _ = Nothing
 
 slaughterFluffyGHCI :: GHCIHandle -> IO ()
