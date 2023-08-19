@@ -2,6 +2,7 @@
 
 module Sheep.GHCI where
 
+import Sheep.Common
 import Sheep.Internal
 
 import Control.Concurrent (
@@ -12,7 +13,10 @@ import Control.Concurrent (
   readMVar,
  )
 import Control.Monad (void)
-import Data.List (isInfixOf)
+import Control.Monad.Trans.Class (lift)
+import Data.List (find, isInfixOf)
+import Data.Maybe (fromMaybe)
+import System.Environment (lookupEnv)
 import System.IO (
   BufferMode (LineBuffering),
   Handle,
@@ -31,6 +35,19 @@ import System.Process (
  )
 import System.Timeout (timeout)
 
+import Data.Text qualified as T
+import Data.Void
+import Text.Megaparsec qualified as P
+import Text.Megaparsec.Char qualified as P
+import Text.Megaparsec.Char.Lexer qualified as L
+
+import Discord
+import Discord.Requests qualified as R
+import Discord.Types
+
+----------------------------------------------------------------------
+-- GHCI handle
+
 data GHCIHandle = GHCIHandle
   { pout :: Handle
   , pin :: Handle
@@ -39,23 +56,11 @@ data GHCIHandle = GHCIHandle
   , processHandle :: ProcessHandle
   }
 
-data GHCIAction
-  = GHCIRun String
-  | GHCIRestart
-  deriving (Show, Eq)
-
 data GHCIResponse
   = GHCIError String
   | GHCITimeout
   | GHCISuccess String
   deriving (Show, Eq)
-
-instance Sheep GHCIHandle where
-  type SheepResponse GHCIHandle = GHCIResponse
-  type SheepAction GHCIHandle = GHCIAction
-  initialize = undefined
-  herd = undefined
-  slaughter = undefined
 
 {- | Read handle until it has line ending in given string.
  | Returning string does not include the ending string.
@@ -143,3 +148,89 @@ runCommand handle@GHCIHandle {..} cmd = do
     Nothing -> do
       clearGHCI handle
       pure GHCITimeout
+
+----------------------------------------------------------------------
+-- Sheep
+
+type Parser = P.Parsec Void T.Text
+
+pMention :: Parser Int
+pMention = P.between (P.string "<@") (P.char '>') L.decimal
+
+pCodeBlock :: Parser String
+pCodeBlock =
+  P.try (P.between (P.string "```hs") (P.string "```") (P.many $ P.satisfy (/= '`')))
+    P.<|> P.try (P.between (P.string "```") (P.string "```") (P.many $ P.satisfy (/= '`')))
+    P.<|> P.between (P.string "`") (P.string "`") (P.many $ P.satisfy (/= '`'))
+
+pCodeMessage :: Parser String
+pCodeMessage = do
+  void pMention
+  void $ P.optional P.newline
+  P.space
+  pCodeBlock
+
+herdFluffyGHCI :: GHCIHandle -> Event -> Cache -> Maybe (DiscordHandler ())
+herdFluffyGHCI handle (MessageCreate m) cache = do
+  let
+    collie = cacheCurrentUser cache
+    code = P.parse pCodeMessage "" (messageContent m)
+
+    callsCollie = not (fromBot m) && mentions collie m
+
+  case (callsCollie, code) of
+    (True, Right s) -> pure $ do
+      lift $ print $ messageContent m
+      resp <- lift $ runCommand handle s
+      let
+        pretty =
+          case resp of
+            GHCISuccess "" -> "Okay"
+            GHCISuccess x -> "```\n" <> x <> "```"
+            GHCIError err -> "```\n" <> err <> "```"
+            GHCITimeout -> "Timeout"
+
+      void $ restCall (R.CreateMessageDetailed (messageChannelId m) (reply m (T.pack pretty)))
+    _ -> Nothing
+herdFluffyGHCI handle (MessageUpdate cid mid) cache = return $ do
+  Right m <- restCall (R.GetChannelMessage (cid, mid))
+
+  let
+    collie = cacheCurrentUser cache
+    code = P.parse pCodeMessage "" (messageContent m)
+
+    callsCollie = not (fromBot m) && mentions collie m
+
+  case (callsCollie, code) of
+    (True, Right s) -> do
+      Right replies <- restCall (R.GetChannelMessages cid (10, R.AfterMessage mid))
+
+      let targetReply = find (maybe False ((== mid) . messageId) . messageReferencedMessage) replies
+
+      case targetReply of
+        Just r -> do
+          resp <- lift $ runCommand handle s
+          let
+            pretty =
+              case resp of
+                GHCISuccess "" -> "Okay"
+                GHCISuccess x -> "```\n" <> x <> "```"
+                GHCIError err -> "```\n" <> err <> "```"
+                GHCITimeout -> "Timeout"
+
+          void $ restCall (R.EditMessage (cid, messageId r) (reply m (T.pack pretty)))
+        Nothing -> pure ()
+herdFluffyGHCI _ _ _ = Nothing
+
+slaughterFluffyGHCI :: GHCIHandle -> IO ()
+slaughterFluffyGHCI = undefined
+
+mkFluffyGHCI :: IO Sheep
+mkFluffyGHCI = do
+  ghciPath <-
+    fromMaybe (error "Provide GHCI via COLLIE_GHCI_PATH envvar")
+      <$> lookupEnv "COLLIE_GHCI_PATH"
+
+  handle <- initializeGHCI ghciPath 1000000
+
+  return $ Sheep (herdFluffyGHCI handle) (slaughterFluffyGHCI handle)

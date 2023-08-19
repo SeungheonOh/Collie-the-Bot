@@ -63,13 +63,19 @@ common common
 library sheep
   import:          common
   build-depends:
-    , base     ^>=4.16.4.0
+    , base             ^>=4.16.4.0
+    , discord-haskell
+    , megaparsec
     , process
+    , text
+    , transformers
 
   exposed-modules:
     Sheep
+    Sheep.Common
     Sheep.GHCI
     Sheep.Internal
+    Sheep.PingPong
 
   hs-source-dirs:  src
 
@@ -94,6 +100,7 @@ executable collie-the-bot
     , process
     , sheep
     , text
+    , transformers
 
   -- Directories containing source files.
   hs-source-dirs: app

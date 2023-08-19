@@ -3,9 +3,13 @@
 
 module Sheep.Internal where
 
-class Sheep a where
-  type SheepResponse a
-  type SheepAction a
-  initialize :: IO a
-  herd :: SheepAction a -> IO (SheepResponse a)
-  slaughter :: a -> IO ()
+import Discord
+import Discord.Types
+
+{- |
+`Sheep` represent independent services that can be interfaced via Collie-the-Bot.
+-}
+data Sheep = Sheep
+  { herd :: Event -> Cache -> Maybe (DiscordHandler ())
+  , slaughter :: IO ()
+  }

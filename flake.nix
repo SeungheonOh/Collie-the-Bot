@@ -13,7 +13,7 @@
     };
   };
 
-  outputs = inputs@{ self, nixpkgs, flake-utils, haskellNix, pre-commit-hooks, ... }:
+  outputs = inputs@{ nixpkgs, flake-utils, haskellNix, pre-commit-hooks, ... }:
     flake-utils.lib.eachSystem [ "x86_64-linux" "x86_64-darwin" ] (system:
       let
         overlays = [ haskellNix.overlay ];
@@ -26,7 +26,7 @@
           inherit pkgs;
         };
         sandboxed-ghci = mkNixPak {
-          config = { sloth, ...}: {
+          config = _: {
             app.package = pkgs.ghc;
             app.binPath = "bin/ghci";
             dbus.enable = false;
@@ -51,13 +51,14 @@
           };
         };
         project = pkgs.haskell-nix.project' {
+          inherit (pre-commit-check.shellHook);
           src = ./.;
-          compiler-nix-name = "ghc925";
+          compiler-nix-name = "ghc927";
           shell = {
             tools = {
-              cabal = {};
-              hlint = {};
-              haskell-language-server = {};
+              cabal = { };
+              hlint = { };
+              haskell-language-server = { };
             };
             nativeBuildInputs = with pkgs; [
               nixpkgs-fmt
@@ -65,14 +66,19 @@
               git
               gnumake
             ];
-            shellHook = pre-commit-check.shellHook;
           };
         };
-        flake = project.flake {};
-      in flake // {
+        flake = project.flake { };
+      in
+      flake // rec {
+        inherit project;
         checks = flake.checks // { formatting-checks = pre-commit-check; };
         packages.ghci = sandboxed-ghci.config.script;
-
-        project = project;
+        packages.collie-the-bot = flake.packages."collie-the-bot:exe:collie-the-bot";
+        packages.runBot =
+          pkgs.writeShellScript "RunCollie" ''
+            export COLLIE_GHCI_PATH=${packages.ghci}/bin/ghci
+            ${packages.collie-the-bot}/bin/collie-the-bot
+          '';
       });
 }
