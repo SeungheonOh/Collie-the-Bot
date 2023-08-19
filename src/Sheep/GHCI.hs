@@ -95,6 +95,9 @@ initializeGHCI execPath ptimeout = do
 
   hPutStrLn pin ":unset +t +s"
   hPutStrLn pin ":set prompt \"\""
+  hPutStrLn pin ":set prompt-cont \"\""
+  hPutStrLn pin ":set prompt-cont-function \"\""
+  hPutStrLn pin ":set prompt-function \"\""
   hPutStrLn pin "import System.IO as COLLIESTD"
   hPutStrLn pin "COLLIESTD.putStrLn \"DONE\""
   hPutStrLn pin "COLLIESTD.hPutStrLn COLLIESTD.stderr \"DONE\""
@@ -179,9 +182,11 @@ sepBy1 p s = scan
 pCodeMessage :: Parser [Code]
 pCodeMessage = do
   void pMention
-  void $ P.optional P.newline
-  P.space
-  sepBy1 pCodeBlock (void P.newline <|> P.space)
+  void $ P.many anyChar
+  blocks
+  where
+    anyChar = P.noneOf ("`" :: String)
+    blocks = liftA2 (:) pCodeBlock ((P.many anyChar *> blocks) <|> pure [])
 
 runCodeBlock :: GHCIHandle -> Code -> IO GHCIResponse
 runCodeBlock handle (CodeLine l) = runCommand handle l
