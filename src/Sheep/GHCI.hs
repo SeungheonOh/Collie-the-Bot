@@ -1,4 +1,5 @@
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Sheep.GHCI where
 
@@ -6,10 +7,14 @@ import Sheep.Common
 import Sheep.Internal
 
 import Control.Applicative
+import Control.Exception (try, SomeException)
 import Control.Concurrent (
+  MVar,
+  takeMVar,
   forkIO,
   killThread,
   newEmptyMVar,
+  newMVar,
   putMVar,
   readMVar,
  )
@@ -126,8 +131,9 @@ clearGHCI (GHCIHandle {..}) = do
   void $ readHandleUntil pout "COLLIEISCLEANINGUP"
   void $ readHandleUntil perr "COLLIEISCLEANINGUPERR"
 
-runCommand :: GHCIHandle -> String -> IO GHCIResponse
-runCommand handle@GHCIHandle {..} cmd = do
+runCommand :: MVar GHCIHandle -> String -> IO GHCIResponse
+runCommand handleVar cmd = do
+  handle@GHCIHandle {..} <- readMVar handleVar
   -- Send command
   hPutStrLn pin cmd
 
@@ -137,18 +143,29 @@ runCommand handle@GHCIHandle {..} cmd = do
 
   -- Read stdout with timeout
   outVar <- newEmptyMVar
-  outTID <- forkIO $ readHandleUntil pout "COLLIEHASSPOKEN" >>= putMVar outVar
+  outTID <- forkIO $ (try @SomeException $ readHandleUntil pout "COLLIEHASSPOKEN") >>= putMVar outVar
   out <- timeout ptimeout $ readMVar outVar
   killThread outTID
-
   case out of
     -- Command returned within timeout
-    Just x -> do
+    Just (Right x) -> do
       err <- readHandleUntil perr "COLLIEHASSPOKENERR"
 
       if null err
         then pure $ GHCISuccess x
         else pure $ GHCIError err
+    Just (Left _) -> do
+      closeGHCI handle
+      void $ takeMVar handleVar
+
+      -- This is terrible, but who cares?
+      ghciPath <-
+        fromMaybe (error "Provide GHCI via COLLIE_GHCI_PATH envvar")
+        <$> lookupEnv "COLLIE_GHCI_PATH"
+
+      newHandle <- initializeGHCI ghciPath 1000000
+      putMVar handleVar newHandle
+      pure $ GHCISuccess "The Collie has been replaced by its clone"
     -- If command hung, and timeout was reached
     Nothing -> do
       clearGHCI handle
@@ -174,11 +191,6 @@ pCodeBlock =
     P.<|> (CodeBlock <$> P.try (P.between (P.string "```") (P.string "```") (P.many $ P.satisfy (/= '`'))))
     P.<|> (CodeLine <$> P.between (P.string "`") (P.string "`") (P.many $ P.satisfy (/= '`')))
 
-sepBy1 :: Alternative f => f a -> f s -> f [a]
-sepBy1 p s = scan
-  where
-    scan = liftA2 (:) p ((s *> scan) <|> pure [])
-
 pCodeMessage :: Parser [Code]
 pCodeMessage = do
   void pMention
@@ -188,7 +200,7 @@ pCodeMessage = do
     anyChar = P.noneOf ("`" :: String)
     blocks = liftA2 (:) pCodeBlock ((P.many anyChar *> blocks) <|> pure [])
 
-runCodeBlock :: GHCIHandle -> Code -> IO GHCIResponse
+runCodeBlock :: MVar GHCIHandle -> Code -> IO GHCIResponse
 runCodeBlock handle (CodeLine l) = runCommand handle l
 runCodeBlock handle (CodeBlock b) = runCommand handle $ ":{\n" <> b <> "\n:}"
 
@@ -201,8 +213,8 @@ prettyGHCIResponse resp =
       GHCIError err -> "```\n" <> err <> "```"
       GHCITimeout -> "Timeout"
 
-herdFluffyGHCI :: GHCIHandle -> Event -> Cache -> Maybe (DiscordHandler ())
-herdFluffyGHCI handle (MessageCreate m) cache = do
+herdFluffyGHCI :: MVar GHCIHandle -> Event -> Cache -> Maybe (DiscordHandler ())
+herdFluffyGHCI handleVar (MessageCreate m) cache = do
   let
     collie = cacheCurrentUser cache
     code = P.parse pCodeMessage "" (messageContent m)
@@ -211,11 +223,11 @@ herdFluffyGHCI handle (MessageCreate m) cache = do
 
   case (callsCollie, code) of
     (True, Right s) -> pure $ do
-      resps <- lift $ traverse (fmap prettyGHCIResponse . runCodeBlock handle) s
+      resps <- lift $ traverse (fmap prettyGHCIResponse . runCodeBlock handleVar) s
 
       void $ restCall (R.CreateMessageDetailed (messageChannelId m) (reply m (T.intercalate "\n" resps)))
     _ -> Nothing
-herdFluffyGHCI handle (MessageUpdate cid mid) cache = return $ do
+herdFluffyGHCI handleVar (MessageUpdate cid mid) cache = return $ do
   Right m <- restCall (R.GetChannelMessage (cid, mid))
 
   let
@@ -232,7 +244,7 @@ herdFluffyGHCI handle (MessageUpdate cid mid) cache = return $ do
 
       case targetReply of
         Just r -> do
-          resps <- lift $ traverse (fmap prettyGHCIResponse . runCodeBlock handle) s
+          resps <- lift $ traverse (fmap prettyGHCIResponse . runCodeBlock handleVar) s
           void $ restCall (R.EditMessage (cid, messageId r) (reply m (T.intercalate "\n" resps)))
         Nothing -> pure ()
     _ -> pure ()
@@ -252,8 +264,9 @@ herdFluffyGHCI _ (MessageDelete cid mid) cache = return $ do
     Nothing -> pure ()
 herdFluffyGHCI _ _ _ = Nothing
 
-slaughterFluffyGHCI :: GHCIHandle -> IO ()
-slaughterFluffyGHCI = undefined
+slaughterFluffyGHCI :: MVar GHCIHandle -> IO ()
+slaughterFluffyGHCI handleVar =
+  takeMVar handleVar >>= closeGHCI
 
 mkFluffyGHCI :: IO Sheep
 mkFluffyGHCI = do
@@ -262,5 +275,6 @@ mkFluffyGHCI = do
       <$> lookupEnv "COLLIE_GHCI_PATH"
 
   handle <- initializeGHCI ghciPath 1000000
+  handleVar <- newMVar handle
 
-  return $ Sheep (herdFluffyGHCI handle) (slaughterFluffyGHCI handle)
+  return $ Sheep (herdFluffyGHCI handleVar) (slaughterFluffyGHCI handleVar)
