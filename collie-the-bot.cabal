@@ -104,3 +104,14 @@ executable collie-the-bot
 
   -- Directories containing source files.
   hs-source-dirs: app
+
+test-suite test-sheep
+  import: common
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  build-depends:
+    , base >=4.16.4.0
+    , text
+    , sheep
+    , megaparsec
+  hs-source-dirs: test
