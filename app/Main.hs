@@ -53,7 +53,7 @@ main = do
         , discordGatewayIntent =
             def
               { gatewayIntentMembers = True
-              , gatewayIntentPrecenses = True
+              , gatewayIntentPresences = True
               , gatewayIntentMessageReactions = True
               , gatewayIntentMessageChanges = True
               , gatewayIntentMessageContent = True
