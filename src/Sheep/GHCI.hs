@@ -186,10 +186,10 @@ pMention = P.between (P.string "<@") (P.char '>') L.decimal
 
 pCodeBlock :: Parser Code
 pCodeBlock =
-  P.try (CodeBlock <$> P.between (P.string "```hs") (P.string "```") (P.many $ P.satisfy (/= '`')))
-    P.<|> (CodeBlock <$> P.try (P.between (P.string "```haskell") (P.string "```") (P.many $ P.satisfy (/= '`'))))
-    P.<|> (CodeBlock <$> P.try (P.between (P.string "```") (P.string "```") (P.many $ P.satisfy (/= '`'))))
-    P.<|> (CodeLine <$> P.between (P.string "`") (P.string "`") (P.many $ P.satisfy (/= '`')))
+  P.try (CodeBlock <$> (P.string "```\n" >> P.manyTill P.anySingle (P.string "```")))
+  P.<|> (CodeBlock <$> (P.string "```hs\n" >> P.manyTill P.anySingle (P.string "```")))
+  P.<|> (CodeBlock <$> (P.string "```haskell\n" >> P.manyTill P.anySingle (P.string "```")))
+  P.<|> (CodeLine <$> P.between (P.string "`") (P.string "`") (P.many $ P.satisfy (/= '`')))
 
 pCodeMessage :: Parser [Code]
 pCodeMessage = do
