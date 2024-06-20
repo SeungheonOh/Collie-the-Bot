@@ -63,7 +63,7 @@ common common
 library sheep
   import:          common
   build-depends:
-    , base             ^>=4.16.4.0
+    , base
     , discord-haskell
     , megaparsec
     , process
@@ -92,7 +92,7 @@ executable collie-the-bot
 
   -- Other library packages from which modules are imported.
   build-depends:
-    , base             ^>=4.16.4.0
+    , base
     , data-default
     , discord-haskell
     , megaparsec
@@ -110,7 +110,7 @@ test-suite test-sheep
   type: exitcode-stdio-1.0
   main-is: Main.hs
   build-depends:
-    , base >=4.16.4.0
+    , base
     , text
     , sheep
     , megaparsec

@@ -27,7 +27,17 @@
         };
         sandboxed-ghci = mkNixPak {
           config = _: {
-            app.package = pkgs.ghc;
+            app.package =
+              (pkgs.ghc.withPackages (gPkgs: with gPkgs; [
+                aeson
+                template-haskell
+                QuickCheck
+                tagsoup
+                http-conduit
+                megaparsec
+                containers
+                optics
+              ]));
             app.binPath = "bin/ghci";
             dbus.enable = false;
           };
@@ -53,7 +63,7 @@
         project = pkgs.haskell-nix.project' {
           inherit (pre-commit-check.shellHook);
           src = ./.;
-          compiler-nix-name = "ghc927";
+          compiler-nix-name = "ghc964";
           shell = {
             tools = {
               cabal = { };

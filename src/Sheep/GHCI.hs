@@ -208,7 +208,7 @@ prettyGHCIResponse :: GHCIResponse -> Text
 prettyGHCIResponse resp =
   T.pack $
     case resp of
-      GHCISuccess "" -> "Okay"
+      GHCISuccess "" -> "왈"
       GHCISuccess x -> "```\n" <> x <> "```"
       GHCIError err -> "```\n" <> err <> "```"
       GHCITimeout -> "Timeout"
